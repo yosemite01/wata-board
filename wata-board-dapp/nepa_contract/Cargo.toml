@@ -1,0 +1,16 @@
+[package]
+name = "nepa_contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"] # This tells Rust to compile to WebAssembly
+
+[dependencies]
+soroban-sdk = "20.0.0"  # The Stellar Smart Contract SDK
+
+[profile.release]
+opt-level = "z"         # Optimizes the contract for small size
+overflow-checks = true
+debug = 0
+strip = "symbols"
