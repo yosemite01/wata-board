@@ -2,6 +2,8 @@ import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react
 import { useState } from 'react';
 import { isConnected, requestAccess, signTransaction } from "@stellar/freighter-api";
 import * as NepaClient from './contracts';
+import { NetworkSwitcher } from './components/NetworkSwitcher';
+import { getCurrentNetworkConfig } from './utils/network-config';
 import About from './pages/About';
 import Contact from './pages/Contact';
 import Rate from './pages/Rate';
@@ -20,11 +22,14 @@ function Navigation() {
           <Link to="/" className="text-xl font-semibold tracking-tight text-slate-100">
             Wata-Board
           </Link>
-          <div className="flex items-center gap-6 text-sm">
-            <Link to="/" className={`transition ${isActive('/')}`}>Pay Bill</Link>
-            <Link to="/about" className={`transition ${isActive('/about')}`}>About</Link>
-            <Link to="/contact" className={`transition ${isActive('/contact')}`}>Contact</Link>
-            <Link to="/rate" className={`transition ${isActive('/rate')}`}>Rate Us</Link>
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-4 text-sm">
+              <Link to="/" className={`transition ${isActive('/')}`}>Pay Bill</Link>
+              <Link to="/about" className={`transition ${isActive('/about')}`}>About</Link>
+              <Link to="/contact" className={`transition ${isActive('/contact')}`}>Contact</Link>
+              <Link to="/rate" className={`transition ${isActive('/rate')}`}>Rate Us</Link>
+            </div>
+            <NetworkSwitcher showLabel={false} />
           </div>
         </div>
       </div>
@@ -36,6 +41,10 @@ function Home() {
   const [meterId, setMeterId] = useState('');
   const [amount, setAmount] = useState('');
   const [status, setStatus] = useState('');
+  
+  // Get current network configuration for display
+  const networkConfig = getCurrentNetworkConfig();
+  const isMainnet = !networkConfig.networkPassphrase.includes('Test');
 
   const handlePayment = async () => {
     if (!(await isConnected())) {
@@ -69,9 +78,11 @@ function Home() {
       setStatus("Connecting to wallet...");
       await requestAccess();
 
+      // Get current network configuration
       const client = new NepaClient.Client({
-        ...NepaClient.networks.testnet,
-        rpcUrl: 'https://soroban-testnet.stellar.org:443',
+        networkPassphrase: networkConfig.networkPassphrase,
+        contractId: networkConfig.contractId,
+        rpcUrl: networkConfig.rpcUrl,
       });
 
       setStatus('Preparing transaction... Please approve in Freighter.');
@@ -82,8 +93,9 @@ function Home() {
       });
 
       await tx.signAndSend({
-        signTransaction: async (transactionXdr) => {
-          const signedTx = await signTransaction(transactionXdr, { network: 'TESTNET' });
+        signTransaction: async (transactionXdr: string) => {
+          const networkName = networkConfig.networkPassphrase.includes('Test') ? 'TESTNET' : 'PUBLIC';
+          const signedTx = await signTransaction(transactionXdr, { network: networkName });
           return signedTx as string;
         },
       });
@@ -103,11 +115,15 @@ function Home() {
             <div>
               <h1 className="text-3xl font-semibold tracking-tight">Wata-Board</h1>
               <p className="mt-2 max-w-prose text-sm text-slate-300">
-                Decentralized utility payments on Stellar (Testnet).
+                Decentralized utility payments on Stellar ({isMainnet ? 'Mainnet' : 'Testnet'}).
               </p>
             </div>
-            <div className="rounded-full bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-300 ring-1 ring-inset ring-sky-500/20">
-              Testnet
+            <div className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${
+              isMainnet 
+                ? 'bg-orange-500/10 text-orange-300 ring-orange-500/20' 
+                : 'bg-sky-500/10 text-sky-300 ring-sky-500/20'
+            }`}>
+              {isMainnet ? 'MAINNET' : 'TESTNET'}
             </div>
           </div>
 
