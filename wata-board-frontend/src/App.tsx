@@ -4,8 +4,10 @@ import { isConnected, requestAccess, signTransaction } from "@stellar/freighter-
 import { Server, Networks, TransactionBuilder, Operation, Asset, BASE_FEE } from '@stellar/stellar-sdk';
 import * as NepaClient from './contracts';
 import { NetworkSwitcher } from './components/NetworkSwitcher';
+import { WalletBalance, WalletBalanceCompact } from './components/WalletBalance';
 import { usePaymentWithRateLimit } from './hooks/useRateLimit';
 import { useFeeEstimation } from './hooks/useFeeEstimation';
+import { useWalletBalance } from './hooks/useWalletBalance';
 import { getCurrentNetworkConfig } from './utils/network-config';
 import About from './pages/About';
 import Contact from './pages/Contact';
@@ -32,6 +34,7 @@ function Navigation() {
               <Link to="/contact" className={`transition ${isActive('/contact')}`}>Contact</Link>
               <Link to="/rate" className={`transition ${isActive('/rate')}`}>Rate Us</Link>
             </div>
+            <WalletBalanceCompact className="text-sm" />
             <NetworkSwitcher showLabel={false} />
           </div>
         </div>
@@ -47,6 +50,7 @@ function Home() {
 
   const paymentRateLimit = usePaymentWithRateLimit();
   const { estimate: feeEstimate, isLoading: isEstimatingFee, estimateFee } = useFeeEstimation();
+  const { balance, refreshBalance, isSufficientBalance, isLowBalance } = useWalletBalance();
   const networkConfig = getCurrentNetworkConfig();
   const isMainnet = networkConfig.networkPassphrase === Networks.PUBLIC;
 
@@ -83,6 +87,12 @@ function Home() {
 
       if (amountU32 > 0xffffffff) {
         setStatus('Amount is too large.');
+        return;
+      }
+
+      // Check if balance is sufficient
+      if (!isSufficientBalance(amountU32)) {
+        setStatus('Insufficient balance. Please add more XLM to your wallet.');
         return;
       }
 
@@ -126,6 +136,11 @@ function Home() {
       setMeterId('');
       setAmount('');
 
+      // Refresh balance after successful transaction
+      setTimeout(() => {
+        refreshBalance();
+      }, 2000);
+
     } catch (err: any) {
       console.error(err);
       setStatus(`Payment failed: ${err?.message || 'Check console.'}`);
@@ -164,6 +179,9 @@ function Home() {
               {isMainnet ? 'MAINNET' : 'TESTNET'}
             </div>
           </div>
+
+          {/* Wallet Balance Display */}
+          <WalletBalance className="mt-6" />
 
           {/* Rate Limit Status */}
           <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
