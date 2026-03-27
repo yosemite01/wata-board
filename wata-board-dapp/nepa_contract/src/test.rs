@@ -177,4 +177,263 @@ mod tests {
         assert!(client.verify_review(&user, &hash));
         assert!(!client.verify_review(&user, &String::from_str(&env, "wrong-hash")));
     }
+
+    // ==================== REFUND MECHANISM TESTS ====================
+
+    #[test]
+    fn test_refund_request_creation() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        let amount = 1000i128;
+        
+        // Make a payment
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &amount);
+        
+        // Request refund
+        let reason = String::from_str(&env, "wrong_meter_id");
+        let request_id = client.request_refund(&user, &payment_id, &reason);
+        
+        assert_eq!(request_id, 1);
+        
+        // Verify request details
+        let request = client.get_refund_request(&request_id);
+        assert_eq!(request.payment_id, payment_id);
+        assert_eq!(request.payer, user);
+        assert_eq!(request.amount, amount);
+        assert_eq!(request.reason, reason);
+        assert_eq!(request.status, String::from_str(&env, "pending"));
+    }
+
+    #[test]
+    fn test_refund_request_invalid_reason() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &1000);
+        
+        // Try invalid reason
+        let invalid_reason = String::from_str(&env, "invalid_reason");
+        let result = std::panic::catch_unwind(|| {
+            client.request_refund(&user, &payment_id, &invalid_reason);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_refund_request_wrong_payer() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &1000);
+        
+        // Different user tries to request refund
+        let other_user = TestAddress::generate(&env);
+        let reason = String::from_str(&env, "wrong_meter_id");
+        let result = std::panic::catch_unwind(|| {
+            client.request_refund(&other_user, &payment_id, &reason);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_single_approval_refund() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        let amount = 1000i128;
+        
+        // Make payment and request refund
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &amount);
+        let reason = String::from_str(&env, "duplicate_payment");
+        let request_id = client.request_refund(&user, &payment_id, &reason);
+        
+        // Admin approves
+        client.approve_refund(&admin, &request_id);
+        
+        // Check request is approved
+        let request = client.get_refund_request(&request_id);
+        assert_eq!(request.status, String::from_str(&env, "approved"));
+        assert_eq!(request.approvers.len(), 1);
+        
+        // Complete refund
+        client.complete_refund(&admin, &token_address, &request_id);
+        
+        // Verify completion
+        let completed_request = client.get_refund_request(&request_id);
+        assert_eq!(completed_request.status, String::from_str(&env, "completed"));
+        
+        let payment_record = client.get_payment_record(&payment_id);
+        assert!(payment_record.refunded);
+        assert_eq!(client.get_total_paid(&meter_id), 0);
+    }
+
+    #[test]
+    fn test_multi_signature_approval() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let approver1 = TestAddress::generate(&env);
+        let approver2 = TestAddress::generate(&env);
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver1.clone());
+        approvers.push_back(approver2.clone());
+        
+        // Set 2 approvals required
+        client.set_refund_approvers(&admin, &approvers, &2);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        let amount = 2000i128;
+        
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &amount);
+        let reason = String::from_str(&env, "user_error");
+        let request_id = client.request_refund(&user, &payment_id, &reason);
+        
+        // First approval - should still be pending
+        client.approve_refund(&approver1, &request_id);
+        let request = client.get_refund_request(&request_id);
+        assert_eq!(request.status, String::from_str(&env, "pending"));
+        assert_eq!(request.approvers.len(), 1);
+        
+        // Second approval - should be approved
+        client.approve_refund(&approver2, &request_id);
+        let request = client.get_refund_request(&request_id);
+        assert_eq!(request.status, String::from_str(&env, "approved"));
+        assert_eq!(request.approvers.len(), 2);
+    }
+
+    #[test]
+    fn test_double_approval_prevention() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &1000);
+        let reason = String::from_str(&env, "incorrect_amount");
+        let request_id = client.request_refund(&user, &payment_id, &reason);
+        
+        // Admin approves
+        client.approve_refund(&admin, &request_id);
+        
+        // Try to approve again
+        let result = std::panic::catch_unwind(|| {
+            client.approve_refund(&admin, &request_id);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_refund_rejection() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &1000);
+        let reason = String::from_str(&env, "wrong_meter_id");
+        let request_id = client.request_refund(&user, &payment_id, &reason);
+        
+        // Reject refund
+        let rejection_reason = String::from_str(&env, "Meter ID was actually correct");
+        client.reject_refund(&admin, &request_id, &rejection_reason);
+        
+        // Verify rejection
+        let request = client.get_refund_request(&request_id);
+        assert_eq!(request.status, String::from_str(&env, "rejected"));
+        assert_eq!(request.rejection_reason, rejection_reason);
+        
+        // Payment should NOT be refunded
+        let payment_record = client.get_payment_record(&payment_id);
+        assert!(!payment_record.refunded);
+    }
+
+    #[test]
+    fn test_unauthorized_refund_approval() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &1000);
+        let reason = String::from_str(&env, "duplicate_payment");
+        let request_id = client.request_refund(&user, &payment_id, &reason);
+        
+        // Non-approver tries to approve
+        let unauthorized = TestAddress::generate(&env);
+        let result = std::panic::catch_unwind(|| {
+            client.approve_refund(&unauthorized, &request_id);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_payer_refund_requests_list() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id1 = String::from_str(&env, "METER-001");
+        let meter_id2 = String::from_str(&env, "METER-002");
+        
+        // Make two payments
+        let payment_id1 = client.pay_bill(&user, &token_address, &meter_id1, &1000);
+        let payment_id2 = client.pay_bill(&user, &token_address, &meter_id2, &2000);
+        
+        // Request refunds for both
+        client.request_refund(&user, &payment_id1, &String::from_str(&env, "wrong_meter_id"));
+        client.request_refund(&user, &payment_id2, &String::from_str(&env, "incorrect_amount"));
+        
+        // Get all requests for this payer
+        let requests = client.get_payer_refund_requests(&user);
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[test]
+    fn test_refund_prevents_already_refunded() {
+        let (env, client, admin) = setup_test();
+        client.initialize(&admin);
+        
+        let user = TestAddress::generate(&env);
+        let token_address = TestAddress::generate(&env);
+        let meter_id = String::from_str(&env, "METER-001");
+        
+        let payment_id = client.pay_bill(&user, &token_address, &meter_id, &1000);
+        let reason = String::from_str(&env, "wrong_meter_id");
+        let request_id = client.request_refund(&user, &payment_id, &reason);
+        
+        // Approve and complete
+        client.approve_refund(&admin, &request_id);
+        client.complete_refund(&admin, &token_address, &request_id);
+        
+        // Try to request refund for already refunded payment
+        let reason2 = String::from_str(&env, "another_reason");
+        let result = std::panic::catch_unwind(|| {
+            client.request_refund(&user, &payment_id, &reason2);
+        });
+        assert!(result.is_err());
+    }
 }
